@@ -16,13 +16,15 @@ app.get('/', (req, res) => {
 });
 
 // Test route — confirms Postgres connection works
-app.get('/api/test-db', async (req, res) => {
+app.get('/api/test-orders', async (req, res) => {
   try {
-    const result = await pool.query('SELECT NOW()');
-    res.json({ dbTime: result.rows[0] });
+    const result = await pool.query(
+      'SELECT region, SUM(total_amount) AS revenue FROM orders GROUP BY region ORDER BY revenue DESC'
+    );
+    res.json(result.rows);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Database connection failed' });
+    res.status(500).json({ error: 'Query failed' });
   }
 });
 
