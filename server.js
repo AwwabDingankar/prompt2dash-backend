@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 const pool = require('./db');
+const generateQueryFromPrompt = require('./llmService');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -25,6 +26,19 @@ app.get('/api/test-orders', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Query failed' });
+  }
+});
+
+app.post('/api/generate-sql', async (req, res) => {
+  try {
+    const { prompt } = req.body;
+    if (!prompt) return res.status(400).json({ error: 'Prompt is required' });
+
+    const result = await generateQueryFromPrompt(prompt);
+    res.json(result);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
   }
 });
 
