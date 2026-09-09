@@ -1,4 +1,4 @@
-const ALLOWED_TABLES = ['customers', 'products', 'orders'];
+const ALLOWED_TABLES = ['customers', 'products', 'orders', 'sales'];
 
 // Keywords that should never appear in a generated query
 const FORBIDDEN_KEYWORDS = [

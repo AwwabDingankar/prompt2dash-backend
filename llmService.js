@@ -1,29 +1,36 @@
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { Mistral } = require('@mistralai/mistralai');
 require('dotenv').config();
 const buildSystemPrompt = require('./promptTemplate');
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const client = new Mistral({ apiKey: process.env.MISTRAL_API_KEY });
 
 async function generateQueryFromPrompt(userPrompt) {
-  const model = genAI.getGenerativeModel({
-    model: 'gemini-3.6-flash',
-    systemInstruction: buildSystemPrompt(),
-    generationConfig: {
-      responseMimeType: 'application/json', // forces valid JSON output
-    },
-  });
-
-  const result = await model.generateContent(userPrompt);
-  const rawText = result.response.text();
-
-  let parsed;
   try {
-    parsed = JSON.parse(rawText);
-  } catch (err) {
-    throw new Error('LLM did not return valid JSON: ' + rawText);
-  }
+    const response = await client.chat.complete({
+      model: 'ministral-3b-2512',
+      messages: [
+        { role: 'system', content: buildSystemPrompt() },
+        { role: 'user', content: userPrompt },
+      ],
+      responseFormat: { type: 'json_object' },
+    });
 
-  return parsed;
+    const rawText = response.choices[0].message.content;
+
+    let parsed;
+    try {
+      parsed = JSON.parse(rawText);
+    } catch (err) {
+      throw new Error('LLM did not return valid JSON: ' + rawText);
+    }
+
+    return parsed;
+  } catch (err) {
+    if (err.statusCode === 429) {
+      throw new Error('Rate limit reached. Please wait a few seconds and try again.');
+    }
+    throw err;
+  }
 }
 
 module.exports = generateQueryFromPrompt;
