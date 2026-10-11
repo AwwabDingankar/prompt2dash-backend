@@ -37,10 +37,17 @@ app.get('/api/test-orders', async (req, res) => {
 // Test route - NL2SQL generation
 app.post('/api/generate-sql', async (req, res) => {
   try {
-    const { prompt } = req.body;
+    const { prompt, apiKey } = req.body;
+    const clientKey = req.headers['x-gemini-api-key'] || apiKey || process.env.GEMINI_API_KEY;
     if (!prompt) return res.status(400).json({ error: 'Prompt is required' });
+    if (!clientKey) {
+      return res.status(400).json({
+        error: 'Gemini API key is required. Please configure your API key.',
+        isApiKeyError: true,
+      });
+    }
 
-    const result = await generateQueryFromPrompt(prompt);
+    const result = await generateQueryFromPrompt(prompt, clientKey);
     res.json(result);
   } catch (err) {
     console.error(err);
@@ -51,11 +58,39 @@ app.post('/api/generate-sql', async (req, res) => {
 // Primary endpoint: NL2Dashboard Generation & Execution
 app.post('/api/query', async (req, res) => {
   try {
-    const { prompt } = req.body;
+    const { prompt, apiKey } = req.body;
+    const clientKey = req.headers['x-gemini-api-key'] || apiKey || process.env.GEMINI_API_KEY;
     if (!prompt) return res.status(400).json({ error: 'Prompt is required' });
+    if (!clientKey) {
+      return res.status(400).json({
+        error: 'Gemini API key is required. Please configure your API key in the app.',
+        isApiKeyError: true,
+      });
+    }
 
     // Step 1: LLM generates dashboard spec
-    const llmResult = await generateQueryFromPrompt(prompt);
+    let llmResult;
+    try {
+      llmResult = await generateQueryFromPrompt(prompt, clientKey);
+    } catch (llmErr) {
+      console.warn('[LLM Generation Error]:', llmErr.message);
+      const msg = llmErr.message || '';
+      if (msg.includes('API_KEY_INVALID') || msg.includes('API key not valid') || msg.includes('403') || msg.includes('unregistered')) {
+        return res.status(401).json({
+          error: 'Your Gemini API key appears invalid. Please verify or update your key from Google AI Studio.',
+          isApiKeyError: true,
+        });
+      }
+      if (msg.includes('RESOURCE_EXHAUSTED') || msg.includes('quota') || msg.includes('429')) {
+        return res.status(429).json({
+          error: 'Gemini API quota exceeded for your key. Please try again shortly or check your Google AI Studio limits.',
+          isApiKeyError: true,
+        });
+      }
+      return res.status(500).json({
+        error: 'Failed to generate dashboard with AI. ' + (llmErr.message || ''),
+      });
+    }
 
     // Multi-chart dashboard response
     if (llmResult.charts || llmResult.kpis) {
