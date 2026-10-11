@@ -1,36 +1,54 @@
-const { Mistral } = require('@mistralai/mistralai');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 require('dotenv').config();
 const buildSystemPrompt = require('./promptTemplate');
 
-const client = new Mistral({ apiKey: process.env.MISTRAL_API_KEY });
 
-async function generateQueryFromPrompt(userPrompt) {
-  try {
-    const response = await client.chat.complete({
-      model: 'ministral-3b-2512',
-      messages: [
-        { role: 'system', content: buildSystemPrompt() },
-        { role: 'user', content: userPrompt },
-      ],
-      responseFormat: { type: 'json_object' },
-    });
+const FALLBACK_MODELS = [
+  'gemini-3.8-flash',
+  'gemini-flash-latest',
+  'gemini-3.7-flash',
+  'gemini-pro-latest',
+  'gemini-3.5-flash',
+];
 
-    const rawText = response.choices[0].message.content;
-
-    let parsed;
-    try {
-      parsed = JSON.parse(rawText);
-    } catch (err) {
-      throw new Error('LLM did not return valid JSON: ' + rawText);
-    }
-
-    return parsed;
-  } catch (err) {
-    if (err.statusCode === 429) {
-      throw new Error('Rate limit reached. Please wait a few seconds and try again.');
-    }
-    throw err;
+async function generateQueryFromPrompt(userPrompt, apiKey = null) {
+  const activeKey = apiKey || process.env.GEMINI_API_KEY;
+  if (!activeKey) {
+    throw new Error('Gemini API key is required. Please configure your Gemini API key.');
   }
+
+  const client = new GoogleGenerativeAI(activeKey);
+  let lastError = null;
+
+  for (const modelName of FALLBACK_MODELS) {
+    try {
+      const model = client.getGenerativeModel({
+        model: modelName,
+        systemInstruction: buildSystemPrompt(),
+        generationConfig: {
+          responseMimeType: 'application/json',
+        },
+      });
+
+      const result = await model.generateContent(userPrompt);
+      const rawText = result.response.text();
+
+      // Clean any potential markdown wrapping
+      const cleaned = rawText
+        .replace(/^```json\s*/i, '')
+        .replace(/^```\s*/i, '')
+        .replace(/```\s*$/i, '')
+        .trim();
+
+      const parsed = JSON.parse(cleaned);
+      return parsed;
+    } catch (err) {
+      console.warn(`[LLM Service] Model "${modelName}" failed:`, err.message);
+      lastError = err;
+    }
+  }
+
+  throw new Error(`All LLM models failed. Last error: ${lastError ? lastError.message : 'Unknown'}`);
 }
 
 module.exports = generateQueryFromPrompt;
