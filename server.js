@@ -16,21 +16,142 @@ app.use(cors({
 }));
 app.use(express.json());
 
+const nodemailer = require('nodemailer');
+
 // Health check route — confirms server is running
 app.get('/', (req, res) => {
   res.json({ status: 'Prompt2Dash backend is running' });
 });
 
-// Test route — confirms Postgres connection works
-app.get('/api/test-orders', async (req, res) => {
+// Helper: send notification email via nodemailer if SMTP/Gmail credentials are configured
+async function sendInquiryEmail(inquiry) {
+  const user = process.env.SMTP_USER || process.env.GMAIL_USER;
+  const pass = process.env.SMTP_PASS || process.env.GMAIL_APP_PASSWORD;
+  const to = process.env.CONTACT_RECEIVER_EMAIL || 'awwabsaleem09@gmail.com';
+
+  if (!user || !pass) {
+    console.log('[Contact Service] SMTP credentials not set. Storing inquiry in database.');
+    return { sent: false, reason: 'SMTP credentials not configured in backend .env' };
+  }
+
   try {
-    const result = await pool.query(
-      'SELECT region, SUM(revenue) AS revenue FROM sales GROUP BY region ORDER BY revenue DESC'
-    );
-    res.json(result.rows);
+    const transporter = nodemailer.createTransport({
+      service: process.env.SMTP_SERVICE || 'gmail',
+      host: process.env.SMTP_HOST || undefined,
+      port: process.env.SMTP_PORT ? Number(process.env.SMTP_PORT) : undefined,
+      secure: process.env.SMTP_SECURE === 'true',
+      auth: { user, pass },
+    });
+
+    const info = await transporter.sendMail({
+      from: `"Prompt2Dash Inquiries" <${user}>`,
+      to,
+      replyTo: inquiry.email,
+      subject: `[Prompt2Dash Inquiry] ${inquiry.plan || 'New Plan'} from ${inquiry.name}`,
+      html: `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #eaeaea; border-radius: 12px; background-color: #fafafa;">
+          <div style="border-bottom: 2px solid #ff4d8b; padding-bottom: 12px; margin-bottom: 20px;">
+            <h2 style="margin: 0; color: #111; font-size: 20px;">New Prompt2Dash Inquiry Received</h2>
+            <p style="margin: 4px 0 0; color: #666; font-size: 13px;">Plan: <strong>${inquiry.plan || 'General'}</strong></p>
+          </div>
+          <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
+            <tr>
+              <td style="padding: 8px 0; color: #666; font-size: 13px; width: 140px;"><strong>Sender Name:</strong></td>
+              <td style="padding: 8px 0; color: #111; font-size: 14px;">${inquiry.name}</td>
+            </tr>
+            <tr>
+              <td style="padding: 8px 0; color: #666; font-size: 13px;"><strong>Sender Email:</strong></td>
+              <td style="padding: 8px 0; color: #111; font-size: 14px;"><a href="mailto:${inquiry.email}">${inquiry.email}</a></td>
+            </tr>
+            <tr>
+              <td style="padding: 8px 0; color: #666; font-size: 13px;"><strong>Database / Stack:</strong></td>
+              <td style="padding: 8px 0; color: #111; font-size: 14px;">${inquiry.db_type || inquiry.dbType || 'Not specified'}</td>
+            </tr>
+            <tr>
+              <td style="padding: 8px 0; color: #666; font-size: 13px;"><strong>Submitted At:</strong></td>
+              <td style="padding: 8px 0; color: #111; font-size: 14px;">${new Date().toLocaleString()}</td>
+            </tr>
+          </table>
+          <div style="background-color: #ffffff; padding: 16px; border-radius: 8px; border: 1px solid #e0e0e0;">
+            <h4 style="margin: 0 0 8px; color: #333; font-size: 13px; text-transform: uppercase;">Message:</h4>
+            <p style="margin: 0; color: #222; font-size: 14px; line-height: 1.6; white-space: pre-wrap;">${inquiry.message}</p>
+          </div>
+          <p style="margin-top: 24px; font-size: 11px; color: #888; text-align: center;">
+            Sent automatically by Prompt2Dash Inquiry Service.
+          </p>
+        </div>
+      `,
+    });
+
+    console.log(`[Contact Service] Email successfully sent to ${to}: ${info.messageId}`);
+    return { sent: true, messageId: info.messageId };
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Query failed' });
+    console.error('[Contact Service] Nodemailer error:', err.message);
+    return { sent: false, error: err.message };
+  }
+}
+
+// Contact submission endpoint — saves to NeonDB and sends email
+app.post('/api/contact', async (req, res) => {
+  try {
+    const { name, email, plan, dbType, message } = req.body;
+
+    if (!name || !name.trim() || !email || !email.trim() || !message || !message.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Name, email, and message are required fields.',
+      });
+    }
+
+    // Ensure inquiries table exists
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS inquiries (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        email TEXT NOT NULL,
+        plan TEXT,
+        db_type TEXT,
+        message TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Insert inquiry into database
+    const insertResult = await pool.query(
+      `INSERT INTO inquiries (name, email, plan, db_type, message)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id, name, email, plan, db_type, message, created_at`,
+      [name.trim(), email.trim(), plan || 'Professional', (dbType || '').trim(), message.trim()]
+    );
+
+    const savedInquiry = insertResult.rows[0];
+
+    // Attempt email dispatch via nodemailer
+    const emailResult = await sendInquiryEmail(savedInquiry);
+
+    return res.status(201).json({
+      success: true,
+      message: 'Inquiry received and recorded successfully.',
+      inquiry: savedInquiry,
+      emailSent: emailResult.sent,
+      emailDetails: emailResult,
+    });
+  } catch (err) {
+    console.error('[Contact API Error]:', err);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to record inquiry: ' + err.message,
+    });
+  }
+});
+
+// View recent inquiries
+app.get('/api/inquiries', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM inquiries ORDER BY created_at DESC LIMIT 50');
+    res.json({ success: true, count: result.rowCount, inquiries: result.rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
