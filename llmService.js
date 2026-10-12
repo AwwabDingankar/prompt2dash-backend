@@ -4,11 +4,11 @@ const buildSystemPrompt = require('./promptTemplate');
 
 
 const FALLBACK_MODELS = [
-  'gemini-3.8-flash',
-  'gemini-flash-latest',
-  'gemini-3.7-flash',
-  'gemini-pro-latest',
   'gemini-3.5-flash',
+  'gemini-3.7-flash',
+  'gemini-flash-latest',
+  'gemini-3.8-flash',
+  'gemini-pro-latest',
 ];
 
 async function generateQueryFromPrompt(userPrompt, apiKey = null) {
